@@ -1,0 +1,9 @@
+# OCR + extraction (fully offline, CPU only)
+rapidocr-onnxruntime>=1.4.4
+opencv-python-headless>=4.9      # headless: avoids the missing libGL.so.1 on this box
+pillow>=10.0
+
+# web layer
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
