@@ -1,3 +1,3 @@
-// Point this at your deployed Cloudflare Worker.
-// Get the URL from `npx wrangler deploy` output.
-window.DOCKETSCAN_API = "";
+// Deployed Cloudflare Worker that proxies NVIDIA NIM.
+// Redeploy the worker with `worker/deploy.sh` and update this if the URL changes.
+window.DOCKETSCAN_API = "https://docketscan-nim.swiftcom-web.workers.dev";

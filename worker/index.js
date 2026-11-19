@@ -15,6 +15,7 @@
 
 const NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const MAX_BYTES = 6 * 1024 * 1024;
+const NIM_TIMEOUT_MS = 45000;   // measured 8-12s; generous for queue spikes
 
 const PROMPT = `You are a precise OCR engine reading a courier docket (shipping label).
 
@@ -57,7 +58,11 @@ function toBase64(buf) {
 }
 
 async function askNim(env, b64, mime) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), NIM_TIMEOUT_MS);
+  try {
   const res = await fetch(NIM_URL, {
+    signal: ctrl.signal,
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.NVIDIA_API_KEY}`,
@@ -74,7 +79,7 @@ async function askNim(env, b64, mime) {
         ],
       }],
       temperature: 0,
-      max_tokens: 1200,
+      max_tokens: 2500,   // reasoning models need headroom before emitting JSON
     }),
   });
 
@@ -86,6 +91,9 @@ async function askNim(env, b64, mime) {
   const msg = payload?.choices?.[0]?.message || {};
   // reasoning models put the answer in `content`, thinking in `reasoning_content`
   return String(msg.content || msg.reasoning_content || "");
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function extractJson(text) {
@@ -120,78 +128,97 @@ function normDate(v) {
   return null;
 }
 
-/** Reconcile two independent readings of the same docket. */
-function reconcile(a, b, elapsedMs, filename) {
-  const ta = cleanTracking(a.tracking_number);
-  const tb = cleanTracking(b.tracking_number);
-  const readings = [ta, tb].filter(Boolean);
+/** Reconcile N independent readings of the same docket. */
+function reconcileAll(samples, elapsedMs, filename) {
+  const norm = samples.map((s) => ({
+    courier: String(s.courier || "").trim(),
+    date: normDate(s.date),
+    tracking: cleanTracking(s.tracking_number),
+  }));
 
-  let value = ta || tb || null;
-  let uncertain = [];
-  let suggestions = [];
-  let confidence = 0.0;
-
-  if (ta && tb) {
-    if (ta === tb) {
-      confidence = 0.92;                       // two independent calls agree
-    } else if (ta.length === tb.length) {
-      uncertain = [...ta].map((c, i) => (c === tb[i] ? -1 : i)).filter((i) => i >= 0);
-      confidence = 0.55;
-      suggestions = [tb];
-      value = ta;                              // first reading is the default
-    } else {
-      confidence = 0.4;
-      suggestions = [tb];
+  // ---- tracking: majority over the samples that produced an answer --------
+  const tracks = norm.map((s) => s.tracking).filter(Boolean);
+  const counts = {};
+  for (const t of tracks) counts[t] = (counts[t] || 0) + 1;
+  let value = null;
+  let bestCount = 0;
+  for (const [t, c] of Object.entries(counts)) {
+    if (c > bestCount || (c === bestCount && value && t.length > value.length)) {
+      value = t;
+      bestCount = c;
     }
-  } else if (value) {
-    confidence = 0.45;                         // only one call produced an answer
   }
 
-  const courierA = (a.courier || "").trim();
-  const courierB = (b.courier || "").trim();
-  const courier = courierA || courierB || null;
-  const courierAgree = courierA && courierB && courierA.toLowerCase() === courierB.toLowerCase();
+  let uncertain = [];
+  const suggestions = [];
+  let confidence = 0.0;
+  if (value) {
+    if (tracks.length >= 2 && bestCount >= 2) {
+      confidence = bestCount === tracks.length ? 0.92 : 0.75;
+      for (const t of tracks) {
+        if (t === value || t.length !== value.length) continue;
+        const diff = [...value].map((c, i) => (c === t[i] ? -1 : i)).filter((i) => i >= 0);
+        if (diff.length) {
+          if (!suggestions.includes(t)) suggestions.push(t);
+          for (const i of diff) if (!uncertain.includes(i)) uncertain.push(i);
+        }
+      }
+      if (uncertain.length) confidence = Math.min(confidence, 0.65);
+    } else {
+      confidence = 0.45;            // only one sample answered
+    }
+  }
+  uncertain.sort((a, b) => a - b);
 
-  const dateA = normDate(a.date);
-  const dateB = normDate(b.date);
-  const date = dateA || dateB;
-  const dateAgree = dateA && dateB && dateA === dateB;
+  // ---- courier / date: majority ------------------------------------------
+  const mode = (list) => {
+    const c = {};
+    for (const v of list) if (v) c[v] = (c[v] || 0) + 1;
+    let best = null;
+    let n = 0;
+    for (const [v, k] of Object.entries(c)) if (k > n) { best = v; n = k; }
+    return [best, n];
+  };
+
+  const [courier, courierVotes] = mode(norm.map((s) => s.courier));
+  const [date, dateVotes] = mode(norm.map((s) => s.date));
+  const answered = norm.filter((s) => s.tracking || s.courier || s.date).length || 1;
 
   const needsReview = [];
   if (confidence < 0.9 || uncertain.length) needsReview.push("tracking");
-  if (!date || !dateAgree) needsReview.push("date");
-  if (!courier || !courierAgree) needsReview.push("courier");
+  if (!date || dateVotes < 2) needsReview.push("date");
+  if (!courier || courierVotes < 2) needsReview.push("courier");
 
   return {
     filename: filename || "docket",
     ok: true,
     courier: {
       value: courier,
-      confidence: courierAgree ? 0.92 : (courier ? 0.6 : 0.0),
+      confidence: courier ? Math.min(0.95, 0.5 + (courierVotes / answered) * 0.45) : 0.0,
       source: "nim",
     },
     date: {
       value: date,
-      raw: a.date || b.date || null,
-      confidence: dateAgree ? 0.92 : (date ? 0.6 : 0.0),
+      raw: norm.find((s) => s.date)?.date || null,
+      confidence: date ? Math.min(0.95, 0.5 + (dateVotes / answered) * 0.45) : 0.0,
       label_nearby: true,
     },
     tracking: {
       value,
-      confidence: confidence,
-      agreement: ta && tb ? (ta === tb ? 1 : 0.5) : 0.5,
+      confidence,
+      agreement: tracks.length ? bestCount / tracks.length : 0,
       uncertain_positions: uncertain,
-      suggestions: suggestions.filter((s) => s && s !== value),
-      readings,
+      suggestions: suggestions.filter((s) => s !== value),
+      readings: tracks,
       alternatives: [],
     },
     amount: null,
     needs_review: needsReview,
     ocr_ms: elapsedMs,
     line_count: 0,
-    raw_text: readings.map((r, i) => `reading ${i + 1}: ${r}`).join("\n"),
+    raw_text: tracks.map((r, i) => `reading ${i + 1}: ${r}`).join("\n"),
     engine: "nvidia-nim",
-    model: a.__model || null,
+    samples_answered: tracks.length,
   };
 }
 
@@ -220,11 +247,23 @@ export default {
       const started = Date.now();
       const b64 = toBase64(buf);
       try {
-        const [a, b] = await Promise.all([
+        // three independent samples in parallel; a truncated reasoning reply
+        // simply loses a vote instead of degrading the whole result
+        const settled = await Promise.allSettled([
+          askNim(env, b64, ctype).then(extractJson),
           askNim(env, b64, ctype).then(extractJson),
           askNim(env, b64, ctype).then(extractJson),
         ]);
-        const result = reconcile(a, b, Date.now() - started, url.searchParams.get("filename"));
+        const samples = settled
+          .filter((r) => r.status === "fulfilled" && r.value && Object.keys(r.value).length)
+          .map((r) => r.value);
+        if (!samples.length) {
+          const why = settled
+            .map((r) => (r.status === "rejected" ? String(r.reason?.message || r.reason) : "no JSON in reply"))
+            .join(" | ");
+          return json({ ok: false, error: `vision model failed: ${why}` }, headers, 502);
+        }
+        const result = reconcileAll(samples, Date.now() - started, url.searchParams.get("filename"));
         return json({ ok: true, count: 1, results: [result] }, headers);
       } catch (err) {
         return json({ ok: false, error: String(err && err.message || err) }, headers, 502);

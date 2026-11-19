@@ -453,7 +453,7 @@ $('#csv-link').onclick = async (e) => {
   if (REMOTE) {
     const note = document.createElement('p');
     note.className = 'hint';
-    note.innerHTML = '☁️ Reading with <b>NVIDIA NIM</b> — about 25–40 s per docket, and the photo is sent to NVIDIA for OCR.';
+    note.innerHTML = '☁️ Reading with <b>NVIDIA NIM</b> — about 10–20 s per docket, and the photo is sent to NVIDIA for OCR.';
     $('#results').parentNode.insertBefore(note, $('#results'));
     $('#authbar').style.display = 'none';
     $('#storage-note').style.display = 'block';

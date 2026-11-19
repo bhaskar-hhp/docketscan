@@ -130,12 +130,12 @@ doubts per digit. Best for real accounting data.
 
 **Public/static (NIM)** — `docs/` + `worker/`: the UI is plain static files on
 GitHub Pages, and a Cloudflare Worker holds the API key and calls a NVIDIA NIM
-vision model twice, reconciling the two readings. Free to host, ~7–35 s per
-docket, and the photo is sent to NVIDIA.
+vision model three times in parallel, taking the majority reading. Free to host,
+~10–20 s per docket, and the photo is sent to NVIDIA.
 
 ```
 docs/index.html ──► Cloudflare Worker ──► NVIDIA NIM (vision)
- (GitHub Pages)      (key + CORS + vote)     e.g. google/gemma-4-31b-it
+ (GitHub Pages)      (key + CORS + vote)     nemotron-3-nano-omni-30b
 ```
 
 Deploy the worker:
@@ -162,13 +162,14 @@ the CSV button exports them client-side.
 
 | model | tracking | latency | stable |
 |---|---|---|---|
-| `google/gemma-4-31b-it` | `…304` ✓ 3/3 | 23–33 s | yes |
-| `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | `…304` ✓ 2/3 | 8–12 s | no (1 trial returned no JSON) |
+| `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | `…304` ✓ 5/5 | 8–18 s | yes → **in use** |
+| `google/gemma-4-31b-it` | `…304` ✓ 3/3 | 23–33 s, later 59–120 s | degraded (endpoint) |
 | `nvidia/nemotron-3.5-super-vl-120b-a12b` | `…904` ✗ | 14 s | — |
 | `google/gemma-3-12b-it` | endpoint returned empty | 0 s | down |
 
-The worker runs **two samples in parallel** and only reports high confidence when
-they agree; disagreeing characters become `uncertain_positions`, exactly like the
-local pipeline.
+The worker runs **three samples in parallel** and takes the majority reading, so
+one truncated reasoning reply only loses a vote. High confidence requires at
+least two samples to agree; disagreeing characters become `uncertain_positions`,
+exactly like the local pipeline.
 
 Benchmark harness: `python3 scripts/nim_compare.py IMAGE --expect <number>`.
