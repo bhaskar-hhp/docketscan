@@ -12,6 +12,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -33,7 +34,8 @@ RECORDS_JSONL = DATA / "scans.jsonl"
 APP_KEY = os.environ.get("DOCKETSCAN_KEY", "").strip()
 
 CSV_HEADER = ["saved_at", "source_file", "courier", "date", "tracking",
-              "tracking_confidence", "needs_review", "corrected", "ocr_ms"]
+              "tracking_confidence", "needs_review", "corrected", "remark",
+              "ocr_ms", "id"]
 
 _OCR_LOCK = threading.Lock()   # ONNX session is not thread-safe
 _CSV_LOCK = threading.Lock()
@@ -70,14 +72,46 @@ def _crop_preview(im, box, zoom: float = 3.0, quality: int = 80) -> str | None:
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def _save_record(row: dict) -> None:
-    with _CSV_LOCK:
-        new_file = not RECORDS_CSV.exists()
-        with RECORDS_CSV.open("a", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=CSV_HEADER)
-            if new_file:
-                writer.writeheader()
+def _load_rows() -> tuple[list[dict], bool]:
+    """Read records.csv, filling in id/remark for rows written by older builds.
+
+    Returns (rows, needs_rewrite). Callers must hold _CSV_LOCK.
+    """
+    if not RECORDS_CSV.exists():
+        return [], False
+    with RECORDS_CSV.open(newline="", encoding="utf-8") as fh:
+        rows = [{k: (v if v is not None else "") for k, v in r.items()}
+                for r in csv.DictReader(fh)]
+    changed = False
+    for r in rows:
+        if not r.get("id"):
+            r["id"] = uuid.uuid4().hex
+            changed = True
+        if "remark" not in r:
+            r["remark"] = ""
+            changed = True
+    return rows, changed
+
+
+def _write_rows(rows: list[dict]) -> None:
+    """Rewrite records.csv atomically. Callers must hold _CSV_LOCK."""
+    tmp = RECORDS_CSV.with_name(RECORDS_CSV.name + ".tmp")
+    with tmp.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=CSV_HEADER, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
             writer.writerow({k: row.get(k, "") for k in CSV_HEADER})
+    tmp.replace(RECORDS_CSV)
+
+
+def _save_record(row: dict) -> None:
+    row = {**row,
+           "id": row.get("id") or uuid.uuid4().hex,
+           "remark": row.get("remark") or ""}
+    with _CSV_LOCK:
+        rows, _ = _load_rows()
+        rows.append(row)
+        _write_rows(rows)
         with RECORDS_JSONL.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
@@ -168,12 +202,31 @@ def confirm(body: ConfirmBody, x_docket_key: str | None = Header(default=None)) 
 @app.get("/api/records")
 def records(limit: int = 25, x_docket_key: str | None = Header(default=None)) -> dict:
     _require_key(x_docket_key)
-    if not RECORDS_CSV.exists():
-        return {"ok": True, "records": []}
     with _CSV_LOCK:
-        with RECORDS_CSV.open(newline="", encoding="utf-8") as fh:
-            rows = list(csv.DictReader(fh))
+        rows, migrated = _load_rows()
+        if migrated:
+            _write_rows(rows)
     return {"ok": True, "records": rows[-limit:][::-1]}
+
+
+class RemarkBody(BaseModel):
+    remark: str = Field(default="", max_length=500)
+
+
+@app.patch("/api/records/{record_id}")
+def set_remark(record_id: str, body: RemarkBody,
+               x_docket_key: str | None = Header(default=None)) -> dict:
+    """Attach a free-text remark to one saved record (shown in the CSV)."""
+    _require_key(x_docket_key)
+    remark = body.remark.strip()
+    with _CSV_LOCK:
+        rows, _ = _load_rows()
+        for row in rows:
+            if row.get("id") == record_id:
+                row["remark"] = remark
+                _write_rows(rows)
+                return {"ok": True, "id": record_id, "remark": remark}
+    raise HTTPException(404, "record not found")
 
 
 @app.delete("/api/records")

@@ -62,7 +62,12 @@
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
   th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  #history{overflow-x:auto}
   td.n{font-family:var(--mono)}
+  td.rm{width:32%;min-width:120px;white-space:normal}
+  td input.remark{width:100%;font:inherit;font-size:12.5px;color:var(--ink);
+       background:transparent;border:1px dashed transparent;border-radius:6px;padding:3px 5px}
+  td input.remark:hover,td input.remark:focus{border-color:var(--line);background:var(--bg);outline:none}
   .empty{color:var(--muted);font-size:13px;padding:8px 0}
   .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;background:#111;color:#fff;
          padding:11px 18px;border-radius:999px;font-size:13px;font-weight:600;opacity:0;
@@ -137,8 +142,19 @@ const REMOTE = !!API;
 const LS_KEY = 'docketscan.records';
 
 function lsRecords() {
-  try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; }
+  try {
+    const all = JSON.parse(localStorage.getItem(LS_KEY) || '[]');
+    let changed = false;
+    for (const r of all) {
+      if (!r.id) { r.id = newId(); changed = true; }
+      if (r.remark === undefined) { r.remark = ''; changed = true; }
+    }
+    if (changed) localStorage.setItem(LS_KEY, JSON.stringify(all));
+    return all;
+  } catch { return []; }
 }
+const newId = () => (crypto.randomUUID ? crypto.randomUUID()
+  : 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
 function lsSave(rec) {
   const all = lsRecords(); all.push(rec);
   localStorage.setItem(LS_KEY, JSON.stringify(all.slice(-500)));
@@ -361,10 +377,12 @@ function renderCard(r) {
     try {
       if (REMOTE) {
         lsSave({
+          id: newId(),
           saved_at: new Date().toISOString().slice(0, 19),
           source_file: r.filename, ...edited,
           tracking_confidence: t.confidence,
           corrected: corrected ? 'yes' : 'no',
+          remark: '',
         });
         save.textContent = corrected ? '✓ Saved (edited)' : '✓ Saved';
         save.classList.remove('primary');
@@ -398,12 +416,13 @@ async function loadHistory() {
   if (REMOTE) {
     const rows = lsRecords().slice(-15).reverse();
     $('#history').innerHTML = rows.length
-      ? `<table><thead><tr><th>When</th><th>Courier</th><th>Date</th><th>Tracking</th><th></th></tr></thead><tbody>
+      ? `<table><thead><tr><th>When</th><th>Courier</th><th>Date</th><th>Tracking</th><th>Remark</th><th></th></tr></thead><tbody>
         ${rows.map((x) => `<tr>
           <td style="color:var(--muted)">${escapeHtml((x.saved_at || '').replace('T', ' ').slice(5, 16))}</td>
           <td>${escapeHtml(x.courier)}</td>
           <td>${escapeHtml(x.date)}</td>
           <td class="n">${escapeHtml(x.tracking)}</td>
+          <td class="rm"><input class="remark" data-id="${escapeHtml(x.id)}" value="${escapeHtml(x.remark || '')}" placeholder="add remark" maxlength="500"></td>
           <td>${x.corrected === 'yes' ? '<span class="chip warn">edited</span>' : ''}</td>
         </tr>`).join('')}</tbody></table>`
       : '<div class="empty">Nothing saved yet.</div>';
@@ -419,12 +438,13 @@ async function loadHistory() {
     const r = await res.json();
     const box = $('#history');
     if (!r.records || !r.records.length) { box.innerHTML = '<div class="empty">Nothing saved yet.</div>'; return; }
-    box.innerHTML = `<table><thead><tr><th>When</th><th>Courier</th><th>Date</th><th>Tracking</th><th></th></tr></thead><tbody>
+    box.innerHTML = `<table><thead><tr><th>When</th><th>Courier</th><th>Date</th><th>Tracking</th><th>Remark</th><th></th></tr></thead><tbody>
       ${r.records.map((x) => `<tr>
         <td style="color:var(--muted)">${escapeHtml((x.saved_at || '').replace('T', ' ').slice(5, 16))}</td>
         <td>${escapeHtml(x.courier)}</td>
         <td>${escapeHtml(x.date)}</td>
         <td class="n">${escapeHtml(x.tracking)}</td>
+        <td class="rm"><input class="remark" data-id="${escapeHtml(x.id)}" value="${escapeHtml(x.remark || '')}" placeholder="add remark" maxlength="500"></td>
         <td>${x.corrected === 'yes' ? '<span class="chip warn">edited</span>' : ''}</td>
       </tr>`).join('')}
     </tbody></table>`;
@@ -433,12 +453,39 @@ async function loadHistory() {
 
 $('#viewer').onclick = () => $('#viewer').classList.remove('show');
 
+/* ---------- remarks (saved with the record, exported in the CSV) ---------- */
+$('#history').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.matches('input.remark')) { e.preventDefault(); e.target.blur(); }
+});
+$('#history').addEventListener('change', async (e) => {
+  const input = e.target.closest('input.remark');
+  if (!input) return;
+  const id = input.dataset.id;
+  const remark = input.value.trim();
+  input.value = remark;
+  try {
+    if (REMOTE) {
+      const all = lsRecords();
+      const row = all.find((x) => x.id === id);
+      if (row) { row.remark = remark; localStorage.setItem(LS_KEY, JSON.stringify(all)); }
+      toast(remark ? 'Remark saved' : 'Remark cleared');
+      return;
+    }
+    const res = await fetch('/api/records/' + encodeURIComponent(id), withKey({
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remark }),
+    }));
+    if (res.status === 401) { $('#authbar').style.display = 'block'; toast('Unlock first'); return; }
+    toast(res.ok ? (remark ? 'Remark saved' : 'Remark cleared') : 'Could not save remark');
+  } catch { toast('Could not save remark'); }
+});
+
 $('#csv-link').onclick = async (e) => {
   e.preventDefault();
   if (REMOTE) {
     const rows = lsRecords();
     if (!rows.length) { toast('No records yet'); return; }
-    const cols = ['saved_at', 'source_file', 'courier', 'date', 'tracking', 'corrected'];
+    const cols = ['saved_at', 'source_file', 'courier', 'date', 'tracking', 'remark', 'corrected'];
     const csv = [cols.join(','), ...rows.map((r) =>
       cols.map((c) => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
