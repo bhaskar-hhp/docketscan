@@ -30,6 +30,8 @@
          color:var(--ink);padding:12px 16px;cursor:pointer;font-weight:600}
   button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
   button:disabled{opacity:.55;cursor:default}
+  button.ghost{padding:4px 10px;font-size:13px;background:transparent;border-color:transparent;color:var(--muted)}
+  button.ghost:hover{color:var(--bad);background:var(--badbg)}
   .big{flex:1;min-width:150px;padding:16px;font-size:15px}
   .hint{color:var(--muted);font-size:13px;margin:10px 0 0}
   .field{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line)}
@@ -102,7 +104,10 @@
   <section class="card">
     <div class="row" style="align-items:center;justify-content:space-between">
       <strong style="font-size:14px">Saved dockets</strong>
-      <a href="#" id="csv-link" style="font-size:13px;color:var(--accent);text-decoration:none;font-weight:600">Download CSV</a>
+      <div class="row" style="gap:4px;align-items:center">
+        <a href="#" id="csv-link" style="font-size:13px;color:var(--accent);text-decoration:none;font-weight:600">Download CSV</a>
+        <button id="clear-link" class="ghost" title="Delete every saved docket">Clear all</button>
+      </div>
     </div>
     <div id="authbar" style="display:none;margin:10px 0">
       <div style="font-size:13px;color:var(--muted);margin-bottom:6px">This server is protected. Enter the access key to save or list records.</div>
@@ -448,6 +453,37 @@ $('#csv-link').onclick = async (e) => {
   const a = document.createElement('a');
   a.href = url; a.download = 'dockets.csv'; a.click();
   URL.revokeObjectURL(url);
+};
+
+$('#clear-link').onclick = async (e) => {
+  e.preventDefault();
+  const count = REMOTE
+    ? lsRecords().length
+    : document.querySelectorAll('#history tbody tr').length;
+  if (!count) { toast('Nothing to clear'); return; }
+  if (!confirm(`Delete all ${count} saved docket${count === 1 ? '' : 's'}? This cannot be undone.`)) return;
+
+  const btn = $('#clear-link');
+  btn.disabled = true; btn.textContent = 'Clearing…';
+  try {
+    if (REMOTE) {
+      localStorage.removeItem(LS_KEY);
+    } else {
+      const res = await fetch('/api/records', withKey({ method: 'DELETE' }));
+      if (res.status === 401) {
+        $('#authbar').style.display = 'block';
+        toast('Unlock first');
+        return;
+      }
+      if (!res.ok) { toast('Could not clear — is the server running?'); return; }
+    }
+    await loadHistory();
+    toast('Cleared all saved dockets');
+  } catch {
+    toast('Could not clear records');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Clear all';
+  }
 };
 
 (async function init() {

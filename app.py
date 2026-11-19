@@ -176,6 +176,16 @@ def records(limit: int = 25, x_docket_key: str | None = Header(default=None)) ->
     return {"ok": True, "records": rows[-limit:][::-1]}
 
 
+@app.delete("/api/records")
+def clear_records(x_docket_key: str | None = Header(default=None)) -> dict:
+    """Delete every saved docket. Irreversible; the UI confirms first."""
+    _require_key(x_docket_key)
+    with _CSV_LOCK:
+        if RECORDS_CSV.exists():
+            RECORDS_CSV.unlink()
+    return {"ok": True, "cleared": True}
+
+
 @app.get("/api/export.csv")
 def export_csv(x_docket_key: str | None = Header(default=None)):
     _require_key(x_docket_key)
