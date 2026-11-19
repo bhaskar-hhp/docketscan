@@ -19,13 +19,18 @@ TAG = '  <script src="config.js"></script>\n'
 
 def main() -> int:
     html = SRC.read_text(encoding="utf-8")
-    if "config.js" not in html:
+    # Guard on the actual tag: the page text also mentions "docs/config.js",
+    # so a bare "config.js" substring test silently skips the injection.
+    if TAG.strip() not in html:
         marker = "<script>\n"
         idx = html.rfind(marker)
         if idx == -1:
             print("could not find the main <script> block", file=sys.stderr)
             return 1
         html = html[:idx] + TAG + html[idx:]
+    if TAG.strip() not in html:
+        print("config.js tag was not injected", file=sys.stderr)
+        return 1
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(html, encoding="utf-8")
