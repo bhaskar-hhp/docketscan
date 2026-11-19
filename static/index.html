@@ -461,6 +461,12 @@ $('#csv-link').onclick = async (e) => {
     loadHistory();
     return;
   }
+  if (!REMOTE && location.hostname.endsWith('github.io')) {
+    const warn = document.createElement('div');
+    warn.className = 'banner';
+    warn.innerHTML = '<span>⚙️</span><div>Backend not configured yet: set <code>window.DOCKETSCAN_API</code> in <code>docs/config.js</code> to the deployed Cloudflare Worker URL.</div>';
+    $('#results').parentNode.insertBefore(warn, $('#results'));
+  }
   try {
     const h = await fetch('/api/health').then((x) => x.json());
     if (h.auth_required) {

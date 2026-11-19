@@ -120,7 +120,6 @@
 <div class="toast" id="toast"></div>
 <div id="viewer"><img id="viewer-img" alt=""></div>
 
-  <script src="config.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 const state = { queue: [], busy: false };
@@ -461,6 +460,12 @@ $('#csv-link').onclick = async (e) => {
     $('#storage-note').textContent = 'In this public demo, saved dockets live only in this browser (no server storage). Export the CSV to keep them.';
     loadHistory();
     return;
+  }
+  if (!REMOTE && location.hostname.endsWith('github.io')) {
+    const warn = document.createElement('div');
+    warn.className = 'banner';
+    warn.innerHTML = '<span>⚙️</span><div>Backend not configured yet: set <code>window.DOCKETSCAN_API</code> in <code>docs/config.js</code> to the deployed Cloudflare Worker URL.</div>';
+    $('#results').parentNode.insertBefore(warn, $('#results'));
   }
   try {
     const h = await fetch('/api/health').then((x) => x.json());
