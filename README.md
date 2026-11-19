@@ -122,3 +122,53 @@ India Post `EE123456789IN` — all read correctly.
 * `opencv-python-headless` is deliberate: the normal wheel needs `libGL.so.1`,
   which is absent on this machine and there is no sudo.
 * No `gh` CLI here; deploys use plain `git` plus a token.
+
+## Two deployment modes
+
+**Local (default)** — the Python app: PP-OCRv4 on CPU, ~5 s, offline, flags
+doubts per digit. Best for real accounting data.
+
+**Public/static (NIM)** — `docs/` + `worker/`: the UI is plain static files on
+GitHub Pages, and a Cloudflare Worker holds the API key and calls a NVIDIA NIM
+vision model twice, reconciling the two readings. Free to host, ~7–35 s per
+docket, and the photo is sent to NVIDIA.
+
+```
+docs/index.html ──► Cloudflare Worker ──► NVIDIA NIM (vision)
+ (GitHub Pages)      (key + CORS + vote)     e.g. google/gemma-4-31b-it
+```
+
+Deploy the worker:
+
+```bash
+cd worker
+npx wrangler login
+npx wrangler secret put NVIDIA_API_KEY     # nvapi-...
+npx wrangler deploy                        # prints https://<name>.<sub>.workers.dev
+```
+
+Then put that URL in `docs/config.js`:
+
+```js
+window.DOCKETSCAN_API = "https://docketscan-nim.<sub>.workers.dev";
+```
+
+and enable Pages: *Settings → Pages → Source: Deploy from a branch → main /docs*.
+
+Saved dockets in static mode live in **browser localStorage** (no server), and
+the CSV button exports them client-side.
+
+### NIM results (measured, same docket)
+
+| model | tracking | latency | stable |
+|---|---|---|---|
+| `google/gemma-4-31b-it` | `…304` ✓ 3/3 | 23–33 s | yes |
+| `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | `…304` ✓ 2/3 | 8–12 s | no (1 trial returned no JSON) |
+| `nvidia/nemotron-3.5-super-vl-120b-a12b` | `…904` ✗ | 14 s | — |
+| `google/gemma-3-12b-it` | endpoint returned empty | 0 s | down |
+
+The worker runs **two samples in parallel** and only reports high confidence when
+they agree; disagreeing characters become `uncertain_positions`, exactly like the
+local pipeline.
+
+Benchmark harness: `python3 scripts/nim_compare.py IMAGE --expect <number>`.

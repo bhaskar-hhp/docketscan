@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DocketScan — read courier dockets</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#12141a; --muted:#6b7280; --line:#e4e7ec;
+    --accent:#1f6feb; --good:#15803d; --goodbg:#e7f6ec; --warn:#b45309; --warnbg:#fdf3e3;
+    --bad:#b91c1c; --badbg:#fdeaea; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0e1116; --card:#161b22; --ink:#e6edf3; --muted:#9aa4b2; --line:#26303b;
+           --accent:#4c8dff; --goodbg:#0f2a1b; --warnbg:#2b2110; --badbg:#2b1414; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       padding-bottom:env(safe-area-inset-bottom)}
+  header{position:sticky;top:0;z-index:10;background:var(--card);border-bottom:1px solid var(--line);
+         padding:12px 16px;display:flex;align-items:center;gap:10px}
+  header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:-.01em}
+  header .dot{width:8px;height:8px;border-radius:50%;background:var(--good)}
+  header .sub{font-size:12px;color:var(--muted);margin-left:auto}
+  main{max-width:780px;margin:0 auto;padding:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  button{font:inherit;border-radius:10px;border:1px solid var(--line);background:var(--card);
+         color:var(--ink);padding:12px 16px;cursor:pointer;font-weight:600}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button:disabled{opacity:.55;cursor:default}
+  .big{flex:1;min-width:150px;padding:16px;font-size:15px}
+  .hint{color:var(--muted);font-size:13px;margin:10px 0 0}
+  .field{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line)}
+  .field:last-child{border-bottom:0}
+  .field .k{width:92px;flex:none;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  .field .v{flex:1;min-width:0}
+  .field input{width:100%;font:inherit;font-weight:600;border:1px dashed transparent;background:transparent;
+               color:var(--ink);padding:4px 6px;border-radius:8px}
+  .field input:hover,.field input:focus{border-color:var(--line);outline:none;background:var(--bg)}
+  .track{font-family:var(--mono);font-size:21px;font-weight:700;letter-spacing:.02em;
+         white-space:nowrap;overflow-x:auto;display:block;padding:2px 0}
+  .track .u{border-bottom:3px solid #f0a020;background:var(--warnbg);border-radius:3px 3px 0 0}
+  .chip{font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;white-space:nowrap}
+  .chip.ok{background:var(--goodbg);color:var(--good)}
+  .chip.warn{background:var(--warnbg);color:var(--warn)}
+  .chip.bad{background:var(--badbg);color:var(--bad)}
+  .banner{display:flex;gap:10px;align-items:flex-start;background:var(--warnbg);color:var(--warn);
+          border-radius:10px;padding:10px 12px;font-size:13px;margin-top:12px}
+  .sugg{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .sugg button{padding:7px 12px;font-size:13px;font-family:var(--mono)}
+  .thumbs{display:flex;gap:10px;margin-top:14px;align-items:flex-start}
+  .thumbs img{border-radius:10px;border:1px solid var(--line);max-height:150px;cursor:zoom-in;object-fit:contain;background:#fff}
+  .thumbs .crop{max-height:110px}
+  details{margin-top:12px}
+  summary{cursor:pointer;color:var(--muted);font-size:13px}
+  pre{font-family:var(--mono);font-size:11.5px;line-height:1.5;background:var(--bg);padding:12px;
+      border-radius:10px;overflow:auto;max-height:260px;white-space:pre-wrap;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  td.n{font-family:var(--mono)}
+  .empty{color:var(--muted);font-size:13px;padding:8px 0}
+  .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;background:#111;color:#fff;
+         padding:11px 18px;border-radius:999px;font-size:13px;font-weight:600;opacity:0;
+         transition:opacity .25s;pointer-events:none;z-index:50}
+  .toast.show{opacity:.95}
+  .prog{font-size:13px;color:var(--muted);margin-top:10px;display:none}
+  .prog.show{display:block}
+  .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line);
+        border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite;vertical-align:-2px;margin-right:6px}
+  @keyframes s{to{transform:rotate(360deg)}}
+  #viewer{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;
+          justify-content:center;z-index:60;padding:16px}
+  #viewer.show{display:flex}
+  #viewer img{max-width:100%;max-height:100%;border-radius:8px}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="dot"></span>
+  <h1>DocketScan</h1>
+  <span class="sub">on-device OCR</span>
+</header>
+
+<main>
+  <section class="card">
+    <div class="row">
+      <button class="primary big" id="btn-cam">📷 Take photo</button>
+      <button class="big" id="btn-pick">🖼 Choose files</button>
+    </div>
+    <p class="hint">Point at a courier docket. We read <b>courier</b>, <b>date</b> and <b>tracking number</b> — then you confirm before saving.</p>
+    <div class="prog" id="prog"><span class="spin"></span><span id="prog-text">Reading…</span></div>
+    <input type="file" id="in-cam" accept="image/*" capture="environment" hidden>
+    <input type="file" id="in-pick" accept="image/*" multiple hidden>
+  </section>
+
+  <div id="results"></div>
+
+  <section class="card">
+    <div class="row" style="align-items:center;justify-content:space-between">
+      <strong style="font-size:14px">Saved dockets</strong>
+      <a href="#" id="csv-link" style="font-size:13px;color:var(--accent);text-decoration:none;font-weight:600">Download CSV</a>
+    </div>
+    <div id="authbar" style="display:none;margin:10px 0">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:6px">This server is protected. Enter the access key to save or list records.</div>
+      <div class="row">
+        <input id="key-input" type="password" placeholder="access key" autocomplete="current-password"
+               style="flex:1;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit">
+        <button id="key-save">Unlock</button>
+      </div>
+    </div>
+    <div id="history"><div class="empty">Nothing saved yet.</div></div>
+    <p class="hint" id="storage-note" style="display:none">Records live on the server. On a free Space this storage is wiped on rebuild — export the CSV for anything you need to keep.</p>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+<div id="viewer"><img id="viewer-img" alt=""></div>
+
+  <script src="config.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+const state = { queue: [], busy: false };
+
+/* ---------- backend mode ----------
+   Same-origin (Python app) by default. A static build injects
+   window.DOCKETSCAN_API = "<cloudflare worker url>" to run against NIM. */
+const API = String(window.DOCKETSCAN_API || '').replace(/\/+$/, '');
+const REMOTE = !!API;
+const LS_KEY = 'docketscan.records';
+
+function lsRecords() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; }
+}
+function lsSave(rec) {
+  const all = lsRecords(); all.push(rec);
+  localStorage.setItem(LS_KEY, JSON.stringify(all.slice(-500)));
+}
+
+async function thumbDataUrl(blob, maxSide = 420) {
+  try {
+    const img = await new Promise((res, rej) => {
+      const i = new Image(); i.onload = () => res(i); i.onerror = rej;
+      i.src = URL.createObjectURL(blob);
+    });
+    const s = Math.min(1, maxSide / Math.max(img.width, img.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.7);
+  } catch { return ''; }
+}
+
+/* ---------- access key (only when the server sets DOCKETSCAN_KEY) ---------- */
+const getKey = () => localStorage.getItem('docketKey') || '';
+function withKey(opts = {}) {
+  const o = { ...opts, headers: { ...(opts.headers || {}) } };
+  if (getKey()) o.headers['X-Docket-Key'] = getKey();
+  return o;
+}
+$('#key-save').onclick = () => {
+  localStorage.setItem('docketKey', $('#key-input').value.trim());
+  $('#authbar').style.display = 'none';
+  loadHistory();
+};
+
+/* ---------- input ---------- */
+$('#btn-cam').onclick = () => $('#in-cam').click();
+$('#btn-pick').onclick = () => $('#in-pick').click();
+$('#in-cam').onchange = (e) => enqueue(e.target.files);
+$('#in-pick').onchange = (e) => enqueue(e.target.files);
+
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._id); t._id = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+function setProg(text) {
+  const p = $('#prog');
+  if (!text) { p.classList.remove('show'); return; }
+  p.classList.add('show'); $('#prog-text').textContent = text;
+}
+
+/* shrink before upload: faster on mobile data, no accuracy loss */
+function shrink(file, maxSide = 2200, quality = 0.9) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(1, maxSide / Math.max(img.width, img.height));
+      if (s === 1 && file.size < 1.2e6) { URL.revokeObjectURL(url); return resolve(file); }
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob((b) => { URL.revokeObjectURL(url); resolve(b || file); }, 'image/jpeg', quality);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+}
+
+function enqueue(files) {
+  if (!files || !files.length) return;
+  for (const f of files) state.queue.push(f);
+  $('#in-cam').value = ''; $('#in-pick').value = '';
+  pump();
+}
+
+async function pump() {
+  if (state.busy) return;
+  state.busy = true;
+  while (state.queue.length) {
+    const f = state.queue.shift();
+    setProg(`Reading ${f.name}…`);
+    const placeholder = document.createElement('div');
+    placeholder.className = 'card';
+    placeholder.innerHTML = `<div class="empty"><span class="spin"></span>Reading ${escapeHtml(f.name)}… (about 5s)</div>`;
+    $('#results').prepend(placeholder);
+    try {
+      const blob = await shrink(f);
+      let res, json;
+      if (REMOTE) {
+        const t0 = performance.now();
+        res = await fetch(API + '/api/scan?filename=' + encodeURIComponent(f.name), {
+          method: 'POST',
+          headers: { 'Content-Type': blob.type || 'image/jpeg' },
+          body: blob,
+        });
+        json = await res.json();
+        if (json && json.results) {
+          const thumb = await thumbDataUrl(blob);
+          for (const r of json.results) {
+            if (!r.thumbnail) r.thumbnail = thumb;
+            if (!r.elapsed_ms) r.elapsed_ms = Math.round(performance.now() - t0);
+            if (!r.filename) r.filename = f.name;
+          }
+        }
+      } else {
+        const fd = new FormData();
+        fd.append('files', blob, f.name);
+        res = await fetch('/api/scan', { method: 'POST', body: fd });
+        json = await res.json();
+      }
+      placeholder.remove();
+      for (const r of json.results) {
+        if (!r.ok) { const c = document.createElement('div'); c.className = 'card';
+          c.innerHTML = `<div class="banner">⚠️ ${escapeHtml(r.error || 'failed')}</div>`; $('#results').prepend(c); }
+        else $('#results').prepend(renderCard(r));
+      }
+    } catch (err) {
+      placeholder.innerHTML = `<div class="banner">⚠️ ${escapeHtml(String(err))}</div>`;
+    }
+  }
+  state.busy = false;
+  setProg(null);
+}
+
+/* ---------- rendering ---------- */
+const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const chipClass = (c) => (c >= 0.85 ? 'ok' : c >= 0.6 ? 'warn' : 'bad');
+const chipText = (c) => `${Math.round((c || 0) * 100)}%`;
+
+function trackHtml(t) {
+  const val = t.value || '—';
+  const unc = new Set(t.uncertain_positions || []);
+  return [...val].map((ch, i) =>
+    `<span class="${unc.has(i) ? 'u' : ''}">${escapeHtml(ch)}</span>`).join('');
+}
+
+function renderCard(r) {
+  const el = document.createElement('div');
+  el.className = 'card';
+  const t = r.tracking || {}, c = r.courier || {}, d = r.date || {};
+  const flags = new Set(r.needs_review || []);
+
+  el.innerHTML = `
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:4px">
+      <span style="font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%">
+        ${escapeHtml(r.filename)}
+      </span>
+      <span style="font-size:11px;color:var(--muted)">${r.elapsed_ms} ms</span>
+    </div>
+
+    <div class="field">
+      <div class="k">Courier</div>
+      <div class="v"><input class="f-courier" value="${escapeHtml(c.value || '')}" placeholder="unknown"></div>
+      <span class="chip ${chipClass(c.confidence)}">${chipText(c.confidence)}</span>
+    </div>
+
+    <div class="field">
+      <div class="k">Date</div>
+      <div class="v"><input class="f-date" value="${escapeHtml(d.value || '')}" placeholder="YYYY-MM-DD"></div>
+      <span class="chip ${chipClass(d.confidence)}">${chipText(d.confidence)}</span>
+    </div>
+
+    <div class="field">
+      <div class="k">Tracking</div>
+      <div class="v">
+        <input class="f-tracking track" value="${escapeHtml(t.value || '')}" spellcheck="false" placeholder="—">
+        ${(t.uncertain_positions || []).length ? `<div style="font-family:var(--mono);font-size:15px;color:var(--muted);margin-top:2px">
+          read as: ${trackHtml(t)}
+        </div>` : ''}
+      </div>
+      <span class="chip ${chipClass(t.confidence)}">${chipText(t.confidence)}</span>
+    </div>
+
+    ${(t.uncertain_positions || []).length ? `
+      <div class="banner">
+        <span>⚠️</span>
+        <div>Digit${t.uncertain_positions.length > 1 ? 's' : ''}
+          ${t.uncertain_positions.map((i) => i + 1).join(', ')} could not be read with certainty —
+          please check against the docket.</div>
+      </div>` : ''}
+
+    ${(t.suggestions || []).length ? `
+      <div class="sugg">
+        ${t.suggestions.map((s) => `<button class="use-sugg" data-v="${escapeHtml(s)}">use ${escapeHtml(s)}</button>`).join('')}
+      </div>` : ''}
+
+    ${flags.size ? `<div class="banner"><span>🔎</span><div>Needs review: ${[...flags].join(', ')}</div></div>` : ''}
+
+    <div class="thumbs">
+      <img src="${r.thumbnail}" alt="docket" data-full="${r.thumbnail}">
+      ${r.tracking_preview ? `<img class="crop" src="${r.tracking_preview}" alt="tracking number crop" data-full="${r.tracking_preview}">` : ''}
+    </div>
+
+    <details><summary>OCR text (${r.line_count} lines)</summary><pre>${escapeHtml(r.raw_text)}</pre></details>
+
+    <div class="row" style="margin-top:14px">
+      <button class="primary save" style="flex:1">✓ Confirm &amp; save</button>
+    </div>`;
+
+  const trackingInput = el.querySelector('.f-tracking');
+  el.querySelectorAll('.use-sugg').forEach((b) => {
+    b.onclick = () => { trackingInput.value = b.dataset.v; trackingInput.focus(); };
+  });
+  el.querySelectorAll('.thumbs img').forEach((img) => {
+    img.onclick = () => { $('#viewer-img').src = img.dataset.full; $('#viewer').classList.add('show'); };
+  });
+
+  const save = el.querySelector('.save');
+  save.onclick = async () => {
+    const edited = {
+      courier: el.querySelector('.f-courier').value.trim(),
+      date: el.querySelector('.f-date').value.trim(),
+      tracking: trackingInput.value.trim(),
+    };
+    const corrected = edited.tracking !== (t.value || '') ||
+                      edited.courier !== (c.value || '') ||
+                      edited.date !== (d.value || '');
+    save.disabled = true; save.textContent = 'Saving…';
+    try {
+      if (REMOTE) {
+        lsSave({
+          saved_at: new Date().toISOString().slice(0, 19),
+          source_file: r.filename, ...edited,
+          tracking_confidence: t.confidence,
+          corrected: corrected ? 'yes' : 'no',
+        });
+        save.textContent = corrected ? '✓ Saved (edited)' : '✓ Saved';
+        save.classList.remove('primary');
+        toast('Saved ' + (edited.tracking || 'docket') + ' (this browser)');
+        loadHistory();
+        return;
+      }
+      const res = await fetch('/api/confirm', withKey({
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_file: r.filename, ...edited,
+          tracking_confidence: t.confidence, needs_review: r.needs_review || [],
+          corrected, ocr_ms: r.elapsed_ms,
+        }),
+      }));
+      if (!res.ok) throw new Error('save failed');
+      save.textContent = corrected ? '✓ Saved (edited)' : '✓ Saved';
+      save.classList.remove('primary');
+      toast('Saved ' + (edited.tracking || 'docket'));
+      loadHistory();
+    } catch (e) {
+      save.disabled = false; save.textContent = '✓ Confirm & save';
+      toast('Could not save — is the server running?');
+    }
+  };
+  return el;
+}
+
+/* ---------- history ---------- */
+async function loadHistory() {
+  if (REMOTE) {
+    const rows = lsRecords().slice(-15).reverse();
+    $('#history').innerHTML = rows.length
+      ? `<table><thead><tr><th>When</th><th>Courier</th><th>Date</th><th>Tracking</th><th></th></tr></thead><tbody>
+        ${rows.map((x) => `<tr>
+          <td style="color:var(--muted)">${escapeHtml((x.saved_at || '').replace('T', ' ').slice(5, 16))}</td>
+          <td>${escapeHtml(x.courier)}</td>
+          <td>${escapeHtml(x.date)}</td>
+          <td class="n">${escapeHtml(x.tracking)}</td>
+          <td>${x.corrected === 'yes' ? '<span class="chip warn">edited</span>' : ''}</td>
+        </tr>`).join('')}</tbody></table>`
+      : '<div class="empty">Nothing saved yet.</div>';
+    return;
+  }
+  try {
+    const res = await fetch('/api/records?limit=15', withKey());
+    if (res.status === 401) {
+      $('#authbar').style.display = 'block';
+      $('#history').innerHTML = '<div class="empty">Locked — enter the access key above.</div>';
+      return;
+    }
+    const r = await res.json();
+    const box = $('#history');
+    if (!r.records || !r.records.length) { box.innerHTML = '<div class="empty">Nothing saved yet.</div>'; return; }
+    box.innerHTML = `<table><thead><tr><th>When</th><th>Courier</th><th>Date</th><th>Tracking</th><th></th></tr></thead><tbody>
+      ${r.records.map((x) => `<tr>
+        <td style="color:var(--muted)">${escapeHtml((x.saved_at || '').replace('T', ' ').slice(5, 16))}</td>
+        <td>${escapeHtml(x.courier)}</td>
+        <td>${escapeHtml(x.date)}</td>
+        <td class="n">${escapeHtml(x.tracking)}</td>
+        <td>${x.corrected === 'yes' ? '<span class="chip warn">edited</span>' : ''}</td>
+      </tr>`).join('')}
+    </tbody></table>`;
+  } catch { /* server offline */ }
+}
+
+$('#viewer').onclick = () => $('#viewer').classList.remove('show');
+
+$('#csv-link').onclick = async (e) => {
+  e.preventDefault();
+  if (REMOTE) {
+    const rows = lsRecords();
+    if (!rows.length) { toast('No records yet'); return; }
+    const cols = ['saved_at', 'source_file', 'courier', 'date', 'tracking', 'corrected'];
+    const csv = [cols.join(','), ...rows.map((r) =>
+      cols.map((c) => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    const a = document.createElement('a'); a.href = url; a.download = 'dockets.csv'; a.click();
+    URL.revokeObjectURL(url);
+    return;
+  }
+  const res = await fetch('/api/export.csv', withKey());
+  if (!res.ok) { toast(res.status === 401 ? 'Unlock first' : 'No records yet'); return; }
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url; a.download = 'dockets.csv'; a.click();
+  URL.revokeObjectURL(url);
+};
+
+(async function init() {
+  if (REMOTE) {
+    const note = document.createElement('p');
+    note.className = 'hint';
+    note.innerHTML = '☁️ Reading with <b>NVIDIA NIM</b> — about 25–40 s per docket, and the photo is sent to NVIDIA for OCR.';
+    $('#results').parentNode.insertBefore(note, $('#results'));
+    $('#authbar').style.display = 'none';
+    $('#storage-note').style.display = 'block';
+    $('#storage-note').textContent = 'In this public demo, saved dockets live only in this browser (no server storage). Export the CSV to keep them.';
+    loadHistory();
+    return;
+  }
+  try {
+    const h = await fetch('/api/health').then((x) => x.json());
+    if (h.auth_required) {
+      $('#authbar').style.display = 'block';
+      $('#key-input').value = getKey();
+    }
+    if (location.hostname.endsWith('hf.space')) $('#storage-note').style.display = 'block';
+  } catch { /* offline */ }
+  loadHistory();
+})();
+</script>
+</body>
+</html>

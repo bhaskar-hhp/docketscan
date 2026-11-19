@@ -1,0 +1,10 @@
+name = "docketscan-nim"
+main = "index.js"
+compatibility_date = "2026-01-01"
+
+# Free plan is enough: the worker only shuffles bytes and JSON.
+[vars]
+MODEL = "google/gemma-4-31b-it"
+# Lock this to your Pages origin once it exists, e.g.
+# ALLOWED_ORIGINS = "https://bhaskar-hhp.github.io"
+ALLOWED_ORIGINS = "*"

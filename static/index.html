@@ -124,6 +124,35 @@
 const $ = (s) => document.querySelector(s);
 const state = { queue: [], busy: false };
 
+/* ---------- backend mode ----------
+   Same-origin (Python app) by default. A static build injects
+   window.DOCKETSCAN_API = "<cloudflare worker url>" to run against NIM. */
+const API = String(window.DOCKETSCAN_API || '').replace(/\/+$/, '');
+const REMOTE = !!API;
+const LS_KEY = 'docketscan.records';
+
+function lsRecords() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; }
+}
+function lsSave(rec) {
+  const all = lsRecords(); all.push(rec);
+  localStorage.setItem(LS_KEY, JSON.stringify(all.slice(-500)));
+}
+
+async function thumbDataUrl(blob, maxSide = 420) {
+  try {
+    const img = await new Promise((res, rej) => {
+      const i = new Image(); i.onload = () => res(i); i.onerror = rej;
+      i.src = URL.createObjectURL(blob);
+    });
+    const s = Math.min(1, maxSide / Math.max(img.width, img.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.7);
+  } catch { return ''; }
+}
+
 /* ---------- access key (only when the server sets DOCKETSCAN_KEY) ---------- */
 const getKey = () => localStorage.getItem('docketKey') || '';
 function withKey(opts = {}) {
@@ -191,10 +220,29 @@ async function pump() {
     $('#results').prepend(placeholder);
     try {
       const blob = await shrink(f);
-      const fd = new FormData();
-      fd.append('files', blob, f.name);
-      const res = await fetch('/api/scan', { method: 'POST', body: fd });
-      const json = await res.json();
+      let res, json;
+      if (REMOTE) {
+        const t0 = performance.now();
+        res = await fetch(API + '/api/scan?filename=' + encodeURIComponent(f.name), {
+          method: 'POST',
+          headers: { 'Content-Type': blob.type || 'image/jpeg' },
+          body: blob,
+        });
+        json = await res.json();
+        if (json && json.results) {
+          const thumb = await thumbDataUrl(blob);
+          for (const r of json.results) {
+            if (!r.thumbnail) r.thumbnail = thumb;
+            if (!r.elapsed_ms) r.elapsed_ms = Math.round(performance.now() - t0);
+            if (!r.filename) r.filename = f.name;
+          }
+        }
+      } else {
+        const fd = new FormData();
+        fd.append('files', blob, f.name);
+        res = await fetch('/api/scan', { method: 'POST', body: fd });
+        json = await res.json();
+      }
       placeholder.remove();
       for (const r of json.results) {
         if (!r.ok) { const c = document.createElement('div'); c.className = 'card';
@@ -306,6 +354,19 @@ function renderCard(r) {
                       edited.date !== (d.value || '');
     save.disabled = true; save.textContent = 'Saving…';
     try {
+      if (REMOTE) {
+        lsSave({
+          saved_at: new Date().toISOString().slice(0, 19),
+          source_file: r.filename, ...edited,
+          tracking_confidence: t.confidence,
+          corrected: corrected ? 'yes' : 'no',
+        });
+        save.textContent = corrected ? '✓ Saved (edited)' : '✓ Saved';
+        save.classList.remove('primary');
+        toast('Saved ' + (edited.tracking || 'docket') + ' (this browser)');
+        loadHistory();
+        return;
+      }
       const res = await fetch('/api/confirm', withKey({
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -329,6 +390,20 @@ function renderCard(r) {
 
 /* ---------- history ---------- */
 async function loadHistory() {
+  if (REMOTE) {
+    const rows = lsRecords().slice(-15).reverse();
+    $('#history').innerHTML = rows.length
+      ? `<table><thead><tr><th>When</th><th>Courier</th><th>Date</th><th>Tracking</th><th></th></tr></thead><tbody>
+        ${rows.map((x) => `<tr>
+          <td style="color:var(--muted)">${escapeHtml((x.saved_at || '').replace('T', ' ').slice(5, 16))}</td>
+          <td>${escapeHtml(x.courier)}</td>
+          <td>${escapeHtml(x.date)}</td>
+          <td class="n">${escapeHtml(x.tracking)}</td>
+          <td>${x.corrected === 'yes' ? '<span class="chip warn">edited</span>' : ''}</td>
+        </tr>`).join('')}</tbody></table>`
+      : '<div class="empty">Nothing saved yet.</div>';
+    return;
+  }
   try {
     const res = await fetch('/api/records?limit=15', withKey());
     if (res.status === 401) {
@@ -355,6 +430,17 @@ $('#viewer').onclick = () => $('#viewer').classList.remove('show');
 
 $('#csv-link').onclick = async (e) => {
   e.preventDefault();
+  if (REMOTE) {
+    const rows = lsRecords();
+    if (!rows.length) { toast('No records yet'); return; }
+    const cols = ['saved_at', 'source_file', 'courier', 'date', 'tracking', 'corrected'];
+    const csv = [cols.join(','), ...rows.map((r) =>
+      cols.map((c) => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    const a = document.createElement('a'); a.href = url; a.download = 'dockets.csv'; a.click();
+    URL.revokeObjectURL(url);
+    return;
+  }
   const res = await fetch('/api/export.csv', withKey());
   if (!res.ok) { toast(res.status === 401 ? 'Unlock first' : 'No records yet'); return; }
   const url = URL.createObjectURL(await res.blob());
@@ -364,6 +450,17 @@ $('#csv-link').onclick = async (e) => {
 };
 
 (async function init() {
+  if (REMOTE) {
+    const note = document.createElement('p');
+    note.className = 'hint';
+    note.innerHTML = '☁️ Reading with <b>NVIDIA NIM</b> — about 25–40 s per docket, and the photo is sent to NVIDIA for OCR.';
+    $('#results').parentNode.insertBefore(note, $('#results'));
+    $('#authbar').style.display = 'none';
+    $('#storage-note').style.display = 'block';
+    $('#storage-note').textContent = 'In this public demo, saved dockets live only in this browser (no server storage). Export the CSV to keep them.';
+    loadHistory();
+    return;
+  }
   try {
     const h = await fetch('/api/health').then((x) => x.json());
     if (h.auth_required) {
