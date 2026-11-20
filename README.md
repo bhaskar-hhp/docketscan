@@ -13,6 +13,9 @@ pinned: false
 Reads a courier docket photo and extracts **courier name, date and tracking
 number** — offline on the server, no API keys, ~5 s per docket.
 
+**Live (no install):** <https://bhaskar-hhp.github.io/docketscan/> — static UI,
+three cloud OCR samples with a majority vote, ~10–20 s per docket.
+
 ## Run
 
 ```bash
@@ -60,6 +63,25 @@ rear camera directly.
 * **"use 24208100094364"** = the alternate reading; tap to apply.
 * Nothing is written to `records.csv` until you press **Confirm & save**, so a
   misread never silently enters your records.
+* **Saved dockets** has a **Remark** column — type in it and press Enter or click
+  away; the note is stored with that record and appears in the CSV.
+* **Clear all** deletes every saved record after a confirmation that shows the
+  count. It cannot be undone, so export the CSV first if you need it.
+
+## Records and remarks
+
+Each saved row is identified by an `id` and may carry a free-text `remark`
+(up to 500 characters). The CSV looks like this:
+
+```csv
+saved_at,source_file,courier,date,tracking,tracking_confidence,needs_review,corrected,remark,ocr_ms,id
+2026-11-19T10:44:18,Docket.jpg,Shree Maruti,2024-09-21,24208100094304,0.92,,no,Paid by cheque 4411,,f1156a15...
+```
+
+`records.csv` files written by older versions are **migrated on first read**:
+missing `id` values are generated and `remark` is set to empty, so no history is
+lost. Both CSV exports (server-side and the static build's client-side download)
+include the remark column.
 
 ## API
 
@@ -67,12 +89,16 @@ rear camera directly.
 |---|---|
 | `POST /api/scan` | multipart `files` → fields + confidences + previews |
 | `POST /api/confirm` | save a (possibly corrected) record |
-| `GET /api/records` | recent saved records |
-| `GET /api/export.csv` | download everything |
+| `GET /api/records` | recent saved records (each with `id` and `remark`) |
+| `PATCH /api/records/{id}` | set or replace one record's remark |
+| `DELETE /api/records` | delete every saved record |
+| `GET /api/export.csv` | download everything, remarks included |
 | `GET /api/health` | liveness + whether a key is required |
 
 ```bash
 curl -X POST localhost:8000/api/scan -F files=@docket.jpg
+curl -X PATCH localhost:8000/api/records/<id> \
+     -H 'Content-Type: application/json' -d '{"remark":"Paid by cheque 4411"}'
 ```
 
 ## Configuration
@@ -81,7 +107,7 @@ curl -X POST localhost:8000/api/scan -F files=@docket.jpg
 |---|---|---|
 | `PORT` | `7860` (Docker) / `8000` (`run.sh`) | listen port |
 | `DOCKETSCAN_DATA` | `./data` | where `records.csv` / `scans.jsonl` live |
-| `DOCKETSCAN_KEY` | unset | if set, saving/listing/exporting requires this access key |
+| `DOCKETSCAN_KEY` | unset | if set, saving, listing, exporting **and editing remarks / clearing** require this access key |
 
 **Set `DOCKETSCAN_KEY` before hosting publicly** — otherwise anyone with the URL
 can read and add docket numbers. Scanning itself stays open.
@@ -121,7 +147,9 @@ India Post `EE123456789IN` — all read correctly.
 
 * `opencv-python-headless` is deliberate: the normal wheel needs `libGL.so.1`,
   which is absent on this machine and there is no sudo.
-* No `gh` CLI here; deploys use plain `git` plus a token.
+* The public demo is the static build on GitHub Pages:
+  <https://bhaskar-hhp.github.io/docketscan/> — it needs no Python and talks to
+  the Worker described under *Two deployment modes*.
 
 ## Two deployment modes
 
@@ -156,7 +184,9 @@ window.DOCKETSCAN_API = "https://docketscan-nim.<sub>.workers.dev";
 and enable Pages: *Settings → Pages → Source: Deploy from a branch → main /docs*.
 
 Saved dockets in static mode live in **browser localStorage** (no server), and
-the CSV button exports them client-side.
+the CSV button exports them client-side. Remarks and **Clear all** work the same
+way there — remarks are kept with the record in the browser, a clear removes the
+browser copy only, and the exported CSV includes the remark column.
 
 ### NIM results (measured, same docket)
 
